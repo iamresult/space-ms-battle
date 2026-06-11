@@ -2,7 +2,7 @@
 <html lang="ja">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
 <title>SPACE MS BATTLE</title>
 <style>
   html,body{margin:0;padding:0;background:#000;height:100%;overflow:hidden;touch-action:none;
@@ -38,8 +38,10 @@ const buf=document.createElement('canvas');buf.width=W;buf.height=H;
 const g=buf.getContext('2d');g.imageSmoothingEnabled=false;
 const PAL={K:'#000000',B:'#0000ff',R:'#ff0000',M:'#ff00ff',G:'#00ff00',C:'#00ffff',Y:'#ffff00',W:'#ffffff'};
 function fit(){
-  const s=Math.max(1,Math.floor(Math.min(innerWidth/W,innerHeight/H)));
-  cv.width=W*s;cv.height=H*s;sc.imageSmoothingEnabled=false;
+  const r=Math.min(innerWidth/W,innerHeight/H);
+  const s=r>=2?Math.floor(r):Math.max(1,Math.floor(r*4)/4); // スマホは0.25刻みで最大化
+  cv.width=Math.round(W*s);cv.height=Math.round(H*s);
+  sc.imageSmoothingEnabled=false;
 }
 addEventListener('resize',fit);fit();
 function px(x,y,w,h,c){g.fillStyle=c;g.fillRect(x|0,y|0,Math.max(1,w|0),Math.max(1,h|0));}
@@ -111,15 +113,45 @@ addEventListener('keydown',e=>{
 });
 addEventListener('keyup',e=>press(e.key.length===1?e.key.toLowerCase():e.key,false));
 function press(k,d){
-  if(d&&!AC){AC=new(window.AudioContext||window.webkitAudioContext)();}
+  if(d){
+    if(!AC){AC=new(window.AudioContext||window.webkitAudioContext)();}
+    if(AC.state==='suspended')AC.resume();           // iOSの音声アンロック
+  }
   if(d&&!key[k])edge(k);
   key[k]=d;
 }
-for(const b of document.querySelectorAll('.pbtn')){
-  const k=b.dataset.k;
-  b.addEventListener('touchstart',e=>{e.preventDefault();press(k,true);});
-  b.addEventListener('touchend',e=>{e.preventDefault();press(k,false);});
+/* ---- スマホタッチ: 指のスライドでもボタンが切り替わる方式 ---- */
+const isTouch=matchMedia('(pointer:coarse)').matches||('ontouchstart'in window);
+if(isTouch)document.getElementById('pads').style.display='block';
+const tmap={};                                        // touchId → 押下中キー
+function btnAt(x,y){
+  const el=document.elementFromPoint(x,y);
+  return el&&el.classList&&el.classList.contains('pbtn')?el.dataset.k:null;
 }
+function tdown(e){
+  for(const t of e.changedTouches){
+    const k=btnAt(t.clientX,t.clientY);
+    const prev=tmap[t.identifier];
+    if(prev&&prev!==k)press(prev,false);
+    if(k){tmap[t.identifier]=k;press(k,true);}
+    else delete tmap[t.identifier];
+  }
+  e.preventDefault();
+}
+function tup(e){
+  for(const t of e.changedTouches){
+    const k=tmap[t.identifier];
+    if(k){press(k,false);delete tmap[t.identifier];}
+    else if(state===ST.TITLE||state===ST.OVER){       // 画面タップでスタート
+      press('x',true);setTimeout(()=>press('x',false),60);
+    }
+  }
+  e.preventDefault();
+}
+addEventListener('touchstart',tdown,{passive:false});
+addEventListener('touchmove',tdown,{passive:false});
+addEventListener('touchend',tup,{passive:false});
+addEventListener('touchcancel',tup,{passive:false});
 
 /* ================= ゲーム状態 ================= */
 const ST={TITLE:0,PLAY:1,DEAD:2,OVER:3,WAVE:4};
@@ -442,7 +474,7 @@ function draw(){
   if(state===ST.OVER){
     bigText('GAME OVER',CY-16,PAL.R);
     text(CX,CY+4,'SCORE '+score+'  HI '+hi,PAL.W,1,'c');
-    if(stTick>60&&tick%60<40)text(CX,CY+18,'PRESS X',PAL.W,1,'c');
+    if(stTick>60&&tick%60<40)text(CX,CY+18,isTouch?'TAP TO RETRY':'PRESS X',PAL.W,1,'c');
   }
   flip();
 }
@@ -545,7 +577,7 @@ function drawTitle(){
   text(CX,52-sz*5,'SPACE MS',col,sz,'c');
   text(CX,52+sz*2,'BATTLE',col,sz,'c');
   if(p>=1){
-    if(tick%60<40)text(CX,96,'PRESS X TO START',PAL.W,1,'c');
+    if(tick%60<40)text(CX,96,isTouch?'TAP TO START':'PRESS X TO START',PAL.W,1,'c');
     text(CX,114,'←↑↓→:MOVE  X:BEAM RIFLE',PAL.G,1,'c');
     text(CX,124,'Z/C:SABER L-R  S:SHIELD',PAL.G,1,'c');
     text(CX,140,'HI-SCORE '+hi,PAL.M,1,'c');
