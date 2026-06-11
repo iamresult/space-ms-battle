@@ -1,0 +1,561 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>SPACE MS BATTLE</title>
+<style>
+  html,body{margin:0;padding:0;background:#000;height:100%;overflow:hidden;touch-action:none;
+    font-family:'Courier New',monospace;-webkit-user-select:none;user-select:none}
+  #wrap{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;flex-direction:column}
+  canvas{image-rendering:pixelated;image-rendering:crisp-edges;background:#000}
+  #pads{position:fixed;inset:0;pointer-events:none;display:none}
+  .pbtn{position:absolute;pointer-events:auto;border:2px solid #0ff;color:#0ff;background:rgba(0,0,0,.4);
+    border-radius:8px;display:flex;align-items:center;justify-content:center;
+    font-weight:bold;font-size:13px;font-family:'Courier New',monospace}
+  .pbtn:active{background:rgba(0,255,255,.25)}
+  @media (pointer:coarse){#pads{display:block}}
+</style>
+</head>
+<body>
+<div id="wrap"><canvas id="cv"></canvas></div>
+<div id="pads">
+  <div class="pbtn" data-k="ArrowUp"    style="left:54px; bottom:120px;width:44px;height:44px">▲</div>
+  <div class="pbtn" data-k="ArrowDown"  style="left:54px; bottom:24px; width:44px;height:44px">▼</div>
+  <div class="pbtn" data-k="ArrowLeft"  style="left:8px;  bottom:72px; width:44px;height:44px">◀</div>
+  <div class="pbtn" data-k="ArrowRight" style="left:100px;bottom:72px; width:44px;height:44px">▶</div>
+  <div class="pbtn" data-k="x" style="right:14px; bottom:104px;width:60px;height:48px">BEAM</div>
+  <div class="pbtn" data-k="z" style="right:142px;bottom:40px; width:56px;height:44px">SBR L</div>
+  <div class="pbtn" data-k="c" style="right:80px; bottom:40px; width:56px;height:44px">SBR R</div>
+  <div class="pbtn" data-k="s" style="right:14px; bottom:40px; width:60px;height:44px">SHLD</div>
+</div>
+<script>
+"use strict";
+/* ================= 8BIT基盤: 240x160仮想画面 / デジタル8色 ================= */
+const W=240,H=160;
+const cv=document.getElementById('cv'),sc=cv.getContext('2d');
+const buf=document.createElement('canvas');buf.width=W;buf.height=H;
+const g=buf.getContext('2d');g.imageSmoothingEnabled=false;
+const PAL={K:'#000000',B:'#0000ff',R:'#ff0000',M:'#ff00ff',G:'#00ff00',C:'#00ffff',Y:'#ffff00',W:'#ffffff'};
+function fit(){
+  const s=Math.max(1,Math.floor(Math.min(innerWidth/W,innerHeight/H)));
+  cv.width=W*s;cv.height=H*s;sc.imageSmoothingEnabled=false;
+}
+addEventListener('resize',fit);fit();
+function px(x,y,w,h,c){g.fillStyle=c;g.fillRect(x|0,y|0,Math.max(1,w|0),Math.max(1,h|0));}
+
+/* ================= 3x5ドットフォント(くっきり描画) ================= */
+const FONT={};
+{const D={
+A:'010101111101101',B:'110101110101110',C:'011100100100011',D:'110101101101110',
+E:'111100110100111',F:'111100110100100',G:'011100101101011',H:'101101111101101',
+I:'111010010010111',J:'001001001101010',K:'101101110101101',L:'100100100100111',
+M:'101111101101101',N:'110101101101101',O:'010101101101010',P:'110101110100100',
+Q:'010101101110011',R:'110101110101101',S:'011100010001110',T:'111010010010010',
+U:'101101101101111',V:'101101101101010',W:'101101101111101',X:'101101010101101',
+Y:'101101010010010',Z:'111001010100111',
+'0':'111101101101111','1':'010110010010111','2':'111001111100111','3':'111001111001111',
+'4':'101101111001001','5':'111100111001111','6':'111100111101111','7':'111001001001001',
+'8':'111101111101111','9':'111101111001111',
+':':'000010000010000','.':'000000000000010','!':'010010010000010','-':'000000111000000',
+'/':'001001010010100',
+'←':'001011111011001','→':'100110111110100','↑':'010111010010010','↓':'010010010111010'};
+for(const k in D){const v=D[k];
+  FONT[k]=[v.slice(0,3),v.slice(3,6),v.slice(6,9),v.slice(9,12),v.slice(12,15)];}}
+function text(x,y,str,c,s=1,align='l'){
+  str=String(str).toUpperCase();
+  const w=str.length*4*s-s;
+  if(align==='c')x-=w/2;else if(align==='r')x-=w;
+  x=Math.round(x);y=Math.round(y);
+  for(const ch of str){
+    const gl=FONT[ch];
+    if(gl)for(let r=0;r<5;r++)for(let col=0;col<3;col++)
+      if(gl[r][col]==='1')px(x+col*s,y+r*s,s,s,c);
+    x+=4*s;
+  }
+}
+
+/* ================= サウンド: 矩形波1系統 ================= */
+let AC=null;
+function snd(seq){ // seq: [[freq,durMs],...]  freq=0で無音
+  if(!AC)return;
+  let t=AC.currentTime;
+  for(const[f,d]of seq){
+    if(f>0){
+      const o=AC.createOscillator(),v=AC.createGain();
+      o.type='square';o.frequency.value=f;
+      v.gain.setValueAtTime(0.08,t);v.gain.setValueAtTime(0.0001,t+d/1000);
+      o.connect(v);v.connect(AC.destination);
+      o.start(t);o.stop(t+d/1000);
+    }
+    t+=d/1000;
+  }
+}
+const sfx={
+  shot:  ()=>snd([[1760,30],[880,40]]),
+  saber: ()=>snd([[220,40],[440,40],[880,60]]),
+  hitE:  ()=>snd([[440,30],[220,30]]),
+  boom:  ()=>snd([[110,60],[80,80],[55,120]]),
+  dmg:   ()=>snd([[160,80],[110,120]]),
+  shld:  ()=>snd([[330,50],[330,50]]),
+  brk:   ()=>snd([[660,50],[330,80],[160,160]]),
+  wave:  ()=>snd([[523,80],[659,80],[784,80],[1046,160]]),
+  over:  ()=>snd([[392,200],[330,200],[262,200],[196,400]]),
+};
+
+/* ================= 入力 ================= */
+const key={};
+addEventListener('keydown',e=>{
+  if(['ArrowUp','ArrowDown','ArrowLeft','ArrowRight',' '].includes(e.key))e.preventDefault();
+  press(e.key.length===1?e.key.toLowerCase():e.key,true);
+});
+addEventListener('keyup',e=>press(e.key.length===1?e.key.toLowerCase():e.key,false));
+function press(k,d){
+  if(d&&!AC){AC=new(window.AudioContext||window.webkitAudioContext)();}
+  if(d&&!key[k])edge(k);
+  key[k]=d;
+}
+for(const b of document.querySelectorAll('.pbtn')){
+  const k=b.dataset.k;
+  b.addEventListener('touchstart',e=>{e.preventDefault();press(k,true);});
+  b.addEventListener('touchend',e=>{e.preventDefault();press(k,false);});
+}
+
+/* ================= ゲーム状態 ================= */
+const ST={TITLE:0,PLAY:1,DEAD:2,OVER:3,WAVE:4};
+let state=ST.TITLE,tick=0,stTick=0;
+let score=0,hi=0,wave=0,lives=3;
+let cam={x:0,y:0};            // 視点(矢印キーでスクロール) 範囲±60
+const CAMR=60,PARA=2;         // 視差係数: 視点1unit=画面2px
+let hp=4;                     // 自機HP(換算: 中心被弾=大ダメージ)
+let shHP=6,shOn=false,shBroken=false; // シールド
+let inv=0;                    // 無敵時間
+let enemies=[],eshots=[],parts=[],beams=[];
+let saber=null;               // {dir:-1(Z:左→中)/1(C:右→中),t}
+let shake=0,flashT=0;         // flashT: 被弾フラッシュ
+let ftexts=[];                // 浮き上がるテキスト(HIT!等)
+function addFtext(x,y,str,c){
+  x=Math.min(W-30,Math.max(30,x));y=Math.min(H-30,Math.max(20,y));
+  ftexts.push({x,y,str,c,t:0});
+}
+
+/* 自機当たり判定: 中心=縦横1/3の矩形 */
+const CX=W/2,CY=H/2,CRW=W/6,CRH=H/6; // 中心半幅40,半高26
+function zone(sx,sy){
+  if(sx<-10||sx>W+10||sy<-10||sy>H+10)return 0;       // 回避
+  if(Math.abs(sx-CX)<=CRW&&Math.abs(sy-CY)<=CRH)return 2; // 中心
+  return 1;                                            // 端
+}
+
+/* ================= 敵 ================= */
+// type: 'ms'(緑MS) 'ftr'(戦闘機) 'shp'(戦艦)
+function spawn(type){
+  const e={type,x:cam.x+rnd(-80,80),y:cam.y+rnd(-50,50),z:0,hp:1,t:0,
+           fire:rnd(60,160),phase:rnd(0,6.28),melee:0,dead:false};
+  if(type==='ms'){e.z=rnd(420,560);e.hp=2;e.spd=1;}
+  if(type==='ftr'){e.z=rnd(380,520);e.hp=1;e.spd=1.5;}
+  if(type==='shp'){e.z=rnd(460,540);e.hp=5;e.spd=0.25;e.x=cam.x+rnd(-30,30);e.y=cam.y+rnd(-25,5);
+    snd([[110,150],[0,80],[110,150],[0,80],[110,300]]);}
+  enemies.push(e);
+}
+function rnd(a,b){return a+Math.random()*(b-a);}
+
+function startWave(){
+  wave++;state=ST.WAVE;stTick=0;sfx.wave();
+  const n=Math.min(2+wave,6),f=Math.min(wave,4);
+  setTimeout(()=>{
+    for(let i=0;i<n;i++)setTimeout(()=>spawn('ms'),i*900);
+    for(let i=0;i<f;i++)setTimeout(()=>spawn('ftr'),600+i*1300);
+    if(wave>=2&&wave%2===0)setTimeout(()=>spawn('shp'),2000);
+  },900);
+}
+
+function project(e){ // 敵→画面座標とスケール
+  const k=120/Math.max(e.z,8);
+  return{sx:CX+(e.x-cam.x)*k*2,sy:CY+(e.y-cam.y)*k*2,s:k};
+}
+
+/* ================= 敵弾 =================
+   発射時に「狙う視点座標」を記録。着弾時の視点とのズレ→画面位置で判定 */
+function efire(e,kind){ // kind: 'beam'|'big'
+  const p=project(e);
+  eshots.push({fx:p.sx,fy:p.sy,t:0,T:kind==='big'?80:55,
+    aimX:cam.x+rnd(-22,22),aimY:cam.y+rnd(-16,16),kind,
+    dC:kind==='big'?4:2,dE:kind==='big'?2:1});
+  snd([[1320,20],[660,30]]);
+}
+function meleeHit(){ // ザク格闘: 着弾点=現在視点近傍
+  const ax=cam.x+rnd(-15,15),ay=cam.y+rnd(-12,12);
+  const sx=CX+(ax-cam.x)*PARA,sy=CY+(ay-cam.y)*PARA;
+  resolveHit(zone(sx,sy),'saber',4,2,sx,sy);
+}
+function resolveHit(zn,wpn,dC,dE,sx,sy){
+  sx=sx??CX;sy=sy??CY;
+  if(zn===0)return 'miss';
+  if(shOn&&!shBroken){
+    shHP-=(wpn==='saber'?2:1);sfx.shld();shake=4;
+    addFtext(CX,CY-22,'GUARD!',PAL.Y);burst(sx,sy,8,PAL.Y);
+    if(shHP<=0){shHP=0;shBroken=true;shOn=false;sfx.brk();addFtext(CX,CY,'SHIELD BREAK!',PAL.R);}
+    return 'guard';
+  }
+  if(inv>0)return 'miss';
+  hp-=(zn===2?dC:dE);sfx.dmg();shake=10;inv=40;flashT=5;
+  burst(sx,sy,16,PAL.R);burst(sx,sy,10,PAL.Y);
+  addFtext(sx,sy-8,zn===2?'CRITICAL!':'HIT!',zn===2?PAL.R:PAL.Y);
+  if(hp<=0)playerDown();
+  return 'hit';
+}
+function playerDown(){
+  sfx.boom();burst(CX,CY,28,PAL.Y);burst(CX,CY,20,PAL.R);
+  lives--;state=lives>0?ST.DEAD:ST.OVER;stTick=0;
+  if(state===ST.OVER){sfx.over();hi=Math.max(hi,score);}
+  eshots=[];
+}
+function respawn(){hp=4;shHP=6;shBroken=false;inv=120;state=ST.PLAY;}
+
+/* ================= 自機武器 ================= */
+function fireBeam(){
+  if(shOn)return;          // シールド中は攻撃不可
+  sfx.shot();
+  beams.push({t:0});
+  // 照準(画面中心)に重なる最も近い敵にヒット
+  let best=null,bd=1e9;
+  for(const e of enemies){
+    const p=project(e),r=hitR(e,p.s);
+    if(Math.abs(p.sx-CX)<r&&Math.abs(p.sy-CY)<r&&e.z<bd){bd=e.z;best=e;}
+  }
+  if(best)setTimeout(()=>damage(best,1),90);
+}
+function swing(dir){
+  if(saber||shOn)return;   // シールド中は攻撃不可
+  saber={dir,t:0};sfx.saber();
+  // 近接のみ: z<90 かつ 振った側〜中央の敵
+  for(const e of enemies){
+    if(e.z>=90)continue;
+    const p=project(e);
+    const ok=dir<0?p.sx<CX+30:p.sx>CX-30;
+    if(ok&&p.sx>-20&&p.sx<W+20)damage(e,2);
+  }
+}
+function hitR(e,s){return e.type==='shp'?s*46:e.type==='ms'?s*13:s*11;}
+function damage(e,d){
+  if(e.dead)return;
+  e.hp-=(e.type==='ftr'?e.hp:d);  // 戦闘機は何でも1発
+  const p=project(e);
+  if(e.hp<=0){
+    e.dead=true;sfx.boom();
+    burst(p.sx,p.sy,e.type==='shp'?40:16,PAL.Y);burst(p.sx,p.sy,12,PAL.R);
+    score+=e.type==='shp'?1000:e.type==='ms'?200:100;
+  }else{sfx.hitE();burst(p.sx,p.sy,5,PAL.W);}
+}
+function burst(x,y,n,c){
+  for(let i=0;i<n;i++){const a=rnd(0,6.28),v=rnd(.4,2.4);
+    parts.push({x,y,vx:Math.cos(a)*v,vy:Math.sin(a)*v,l:rnd(14,34),c});}
+}
+
+/* ================= キー単発 ================= */
+function edge(k){
+  if(state===ST.TITLE&&k==='x'){score=0;wave=0;lives=3;hp=4;shHP=6;shBroken=false;
+    enemies=[];eshots=[];parts=[];cam={x:0,y:0};startWave();return;}
+  if(state===ST.OVER&&k==='x'&&stTick>60){state=ST.TITLE;stTick=0;return;}
+  if(state!==ST.PLAY)return;
+  if(k==='x'&&!shOn)fireBeam();
+  if(k==='z'&&!shOn)swing(-1);
+  if(k==='c'&&!shOn)swing(1);
+}
+
+/* ================= 更新 ================= */
+function update(){
+  tick++;stTick++;if(inv>0)inv--;if(shake>0)shake--;
+  if(state===ST.WAVE&&stTick>90)state=ST.PLAY;
+  if(state===ST.DEAD&&stTick>100)respawn();
+  if(state!==ST.PLAY&&state!==ST.WAVE&&state!==ST.DEAD)return;
+
+  // 視点スクロール(無限)
+  const ms=2.2;
+  if(key['ArrowLeft'])cam.x-=ms;
+  if(key['ArrowRight'])cam.x+=ms;
+  if(key['ArrowUp'])cam.y-=ms;
+  if(key['ArrowDown'])cam.y+=ms;
+  shOn=!!key['s']&&!shBroken&&state===ST.PLAY;
+
+  // 敵
+  for(const e of enemies){
+    e.t++;
+    if(e.type==='ms'){
+      if(e.melee>0){ // 格闘シーケンス: 急接近して画面いっぱいに迫る
+        e.melee--;
+        if(e.melee>30)e.z=Math.max(32,e.z-2.4);      // 突進(ぐっと大きくなる)
+        if(e.melee===20&&state===ST.PLAY)meleeHit();
+        if(e.melee===0)e.z=rnd(280,380);             // 斬り抜けて離脱
+      }else{
+        e.z-=0.55*e.spd;
+        e.x+=Math.sin(e.t/40+e.phase)*0.5;e.y+=Math.cos(e.t/55+e.phase)*0.3;
+        // 視点中央へ寄りながら接近(格闘の説得力)
+        e.x+=(cam.x-e.x)*0.012;e.y+=(cam.y-e.y)*0.012;
+        if(e.z<110){e.melee=78;snd([[880,40],[440,40],[880,40]]);} // 接近戦突入!
+        else if(e.z<420&&--e.fire<=0){efire(e,'beam');e.fire=rnd(110,190);e.mz=8;}
+      }
+    }else if(e.type==='ftr'){
+      e.z-=0.9*e.spd;
+      e.x+=Math.sin(e.t/16+e.phase)*1.6;e.y+=Math.cos(e.t/22+e.phase)*0.8;
+      if(e.z<40){e.z=rnd(420,520);e.x=cam.x+rnd(-80,80);e.y=cam.y+rnd(-50,50);}
+      if(e.z<400&&--e.fire<=0){efire(e,'beam');e.fire=rnd(90,150);}
+    }else{ // 戦艦: ゆっくり迫る(z=260で停止)
+      e.z=Math.max(260,e.z-0.18);e.x+=Math.sin(e.t/120+e.phase)*0.2;
+      if(--e.fire<=0){efire(e,'big');e.fire=rnd(150,220);}
+    }
+  }
+  enemies=enemies.filter(e=>!e.dead);
+  if(state===ST.PLAY&&enemies.length===0&&stTick>60)startWave();
+
+  // 敵弾
+  for(const s of eshots){
+    if(s.pass){ // すれ違い: 巨大化しながら脇を抜けていく
+      if(++s.pass>9)s.done=true;
+      continue;
+    }
+    s.t++;
+    const p=s.t/s.T;
+    if(p>0.72&&!s.w2){s.w2=1;snd([[1568,25]]);} // 接近警告ブリップ
+    if(s.t>=s.T){
+      const sx=CX+(s.aimX-cam.x)*PARA,sy=CY+(s.aimY-cam.y)*PARA;
+      if(state===ST.PLAY){
+        const res=resolveHit(zone(sx,sy),'beam',s.dC,s.dE,sx,sy);
+        if(res==='miss'){ // 回避成功→すれ違いへ
+          s.pass=1;s.mx=sx;s.my=sy;
+          let dx=sx-CX,dy=sy-CY;const L=Math.hypot(dx,dy)||1;
+          s.dx=dx/L;s.dy=dy/L;snd([[330,30],[165,40]]);
+        }else s.done=true;
+      }else s.done=true;
+    }
+  }
+  eshots=eshots.filter(s=>!s.done);
+
+  // 浮きテキスト
+  for(const f of ftexts){f.t++;f.y-=0.4;}
+  ftexts=ftexts.filter(f=>f.t<40);
+  if(flashT>0)flashT--;
+
+  // エフェクト
+  for(const b of beams)b.t++;
+  beams=beams.filter(b=>b.t<8);
+  if(saber&&++saber.t>14)saber=null;
+  for(const p of parts){p.x+=p.vx;p.y+=p.vy;p.l--;}
+  parts=parts.filter(p=>p.l>0);
+}
+
+/* ================= 描画 ================= */
+/* 3Dスターフィールド: 奥(z大)から手前へ流れてくる遠近法表現 */
+const stars=[];
+for(let i=0;i<90;i++)stars.push({wx:rnd(-260,260),wy:rnd(-180,180),z:rnd(10,420)});
+function drawStars(ox,oy){
+  for(const s of stars){
+    s.z-=1.4;                                   // 前進感(ワープ風)
+    if(s.z<6){s.z=420;s.wx=rnd(-260,260);s.wy=rnd(-180,180);}
+    const k=120/s.z;
+    const x=CX+(s.wx-cam.x*0.6)*k*0.9+ox, y=CY+(s.wy-cam.y*0.6)*k*0.9+oy;
+    if(x<0||x>=W||y<0||y>=H){                   // 画面外→再配置
+      s.z=rnd(200,420);s.wx=cam.x*0.6+rnd(-260,260);s.wy=cam.y*0.6+rnd(-180,180);continue;
+    }
+    // 距離で色と大きさが変化(遠=青暗 → 近=白)
+    if(s.z>260)px(x,y,1,1,PAL.B);
+    else if(s.z>120)px(x,y,1,1,PAL.C);
+    else px(x,y,s.z<50?2:1,s.z<50?2:1,PAL.W);
+  }
+}
+function draw(){
+  g.fillStyle=PAL.K;g.fillRect(0,0,W,H);
+  const ox=shake?rnd(-2,2):0,oy=shake?rnd(-2,2):0;
+  drawStars(ox,oy);
+  if(state===ST.TITLE){drawTitle();flip();return;}
+
+  // 敵(奥から)
+  const es=[...enemies].sort((a,b)=>b.z-a.z);
+  for(const e of es)drawEnemy(e,ox,oy);
+
+  // 敵弾(加速度的に迫ってくる)
+  for(const s of eshots){
+    if(s.pass){ // すれ違い: 画面端へ巨大化しながら抜ける
+      const q=s.pass;
+      const x=s.mx+s.dx*q*9+ox,y=s.my+s.dy*q*9+oy,r=7+q*3;
+      px(x-r/2,y-r/2,r,r,s.kind==='big'?PAL.M:PAL.R);
+      px(x-r/4,y-r/4,r/2,r/2,PAL.Y);
+      continue;
+    }
+    const p=s.t/s.T,p2=Math.pow(p,2.4); // 遠くはゆっくり→直前で急膨張
+    const tx=CX+(s.aimX-cam.x)*PARA,ty=CY+(s.aimY-cam.y)*PARA;
+    const x=s.fx+(tx-s.fx)*p+ox,y=s.fy+(ty-s.fy)*p+oy;
+    const r=1+p2*(s.kind==='big'?16:11);
+    // 残像(ひとつ前の位置に淡い影)
+    const pp=Math.max(0,p-0.07),pr=1+Math.pow(pp,2.4)*(s.kind==='big'?16:11);
+    const lx=s.fx+(tx-s.fx)*pp+ox,ly=s.fy+(ty-s.fy)*pp+oy;
+    px(lx-pr/2,ly-pr/2,pr,pr,s.kind==='big'?'#880088':'#880000');
+    // 本体: 外殻→コア→直前は白く点滅
+    px(x-r/2,y-r/2,r,r,s.kind==='big'?PAL.M:PAL.R);
+    px(x-r/4,y-r/4,Math.max(1,r/2),Math.max(1,r/2),PAL.Y);
+    if(p>0.72&&tick%4<2)px(x-r/6,y-r/6,Math.max(1,r/3),Math.max(1,r/3),PAL.W);
+  }
+  // パーティクル
+  for(const p of parts)px(p.x+ox,p.y+oy,p.l>20?2:1,p.l>20?2:1,p.c);
+
+  /* --- コックピット --- */
+  if(state===ST.PLAY||state===ST.WAVE){
+    // 自ビーム
+    for(const b of beams){
+      g.strokeStyle=PAL.Y;g.lineWidth=2;
+      g.beginPath();g.moveTo(18,H);g.lineTo(CX,CY);g.moveTo(W-18,H);g.lineTo(CX,CY);g.stroke();
+      px(CX-3,CY-3,6,6,PAL.W);
+    }
+    // サーベル
+    if(saber){
+      const p=saber.t/14,a=saber.dir<0?(-2.6+p*1.6):(-0.54-p*1.6);
+      const bx=saber.dir<0?30:W-30,by=H+8,L=120;
+      g.strokeStyle=PAL.M;g.lineWidth=5;
+      g.beginPath();g.moveTo(bx,by);g.lineTo(bx+Math.cos(a)*L,by+Math.sin(a)*L);g.stroke();
+      g.strokeStyle=PAL.W;g.lineWidth=2;
+      g.beginPath();g.moveTo(bx,by);g.lineTo(bx+Math.cos(a)*L,by+Math.sin(a)*L);g.stroke();
+    }
+    // 照準
+    px(CX-6,CY,4,1,PAL.G);px(CX+3,CY,4,1,PAL.G);px(CX,CY-6,1,4,PAL.G);px(CX,CY+3,1,4,PAL.G);
+    // シールド(視界を塞ぐ)
+    if(shOn){
+      px(14,6,W-28,H-12,PAL.R);
+      px(20,12,W-40,H-24,'#aa0000');
+      text(CX,CY-8,'SHIELD '+shHP+'/6',PAL.Y,1,'c');
+      for(let i=0;i<shHP;i++)px(CX-24+i*8,CY+4,6,4,PAL.Y);
+    }
+    // 機体フレーム
+    px(0,0,W,3,'#222');px(0,H-12,W,12,'#222');px(0,0,4,H,'#222');px(W-4,0,4,H,'#222');
+    if(inv>0&&(tick%8<4))g.strokeStyle=PAL.C,g.strokeRect(2,2,W-4,H-4);
+  }
+  // 被弾フラッシュ: 命中の瞬間、画面全体が赤く光る
+  if(flashT>=4)px(0,0,W,H,PAL.R);
+  else if(flashT>0){px(0,0,W,4,PAL.R);px(0,H-4,W,4,PAL.R);px(0,0,4,H,PAL.R);px(W-4,0,4,H,PAL.R);}
+  // 浮きテキスト(HIT!/CRITICAL!/GUARD!)
+  for(const f of ftexts)text(f.x,f.y,f.str,(f.t%6<3)?f.c:PAL.W,1,'c');
+  drawHUD();
+  const shp=enemies.find(e=>e.type==='shp');
+  if(shp&&shp.t<160&&tick%20<12)bigText('WARNING',28,PAL.R);
+  if(state===ST.WAVE){bigText('WAVE '+wave,CY-8,PAL.C);}
+  if(state===ST.DEAD){bigText('DOWN...',CY-8,PAL.R);}
+  if(state===ST.OVER){
+    bigText('GAME OVER',CY-16,PAL.R);
+    text(CX,CY+4,'SCORE '+score+'  HI '+hi,PAL.W,1,'c');
+    if(stTick>60&&tick%60<40)text(CX,CY+18,'PRESS X',PAL.W,1,'c');
+  }
+  flip();
+}
+/* ================= ドット絵スプライト定義 ================= */
+const SPR_MS=[      // モノアイ風MS 16x15: 前傾突進ポーズ(ライフルを構え、片膝を上げ、後ろ脚を流す)
+'......GGG.......',
+'.....GGGGG......',
+'.....BBBBB......',
+'...DDGGGGGGDD...',
+'..DDDGGGGGGDDD..',
+'..DDDGGGGGGDDD..',
+'..DD..GGGG..DD..',
+'RRRRRRRRRG..DD..',
+'...D..GGGG......',
+'......GGGG......',
+'....GGGG.GG.....',
+'...GGG....GG....',
+'...GGG.....GG...',
+'....DD......GG..',
+'.............DD.'];
+const SPR_FTR=[     // 戦闘機 14x7: コクピットポッド+大きく張り出した後退翼
+'......WW......',
+'.....CCCC.....',
+'CC...CCCC...CC',
+'.CCC.CCCC.CCC.',
+'..CCCCCCCCCC..',
+'....DDDDDD....',
+'......CC......'];
+const SPR_SHP=[     // 戦艦 24x8
+'........PPPP............',
+'......PPPPPPPP....PPP...',
+'......PPWWPPPP....PPP...',
+'MMMMMMMMMMMMMMMMMMMMMMMM',
+'CMMMMMMMMMMMMMMMMMMMMMMC',
+'MMMMYMMMYMMMYMMMYMMMMMMM',
+'.MMMMMMMMMMMMMMMMMMMMMM.',
+'...MMM.........MMM......'];
+function drawSprite(map,cx0,cy0,u,cmap){ // 整数グリッドに揃えてくっきり描画
+  const cols=map[0].length,rows=map.length;
+  const x0=Math.round(cx0-cols*u/2),y0=Math.round(cy0-rows*u/2);
+  for(let r=0;r<rows;r++)for(let c=0;c<cols;c++){
+    const ch=map[r][c];if(ch==='.')continue;
+    const col=cmap[ch];if(col)px(x0+c*u,y0+r*u,u,u,col);
+  }
+  return{x0,y0};
+}
+function drawEnemy(e,ox,oy){
+  const{sx,sy,s}=project(e);if(sx<-80||sx>W+80||sy<-80||sy>H+80)return;
+  const x=sx+ox,y=sy+oy;
+  if(e.type==='ms'){
+    const u=Math.max(1,Math.round(s*1.2));   // 接近戦(z≈32)で画面を覆う大きさに
+    const far=e.z>340,ml=e.melee>0;
+    const cmap=ml
+      ?{G:(tick%8<4)?PAL.R:'#aa0000',D:'#880000',B:'#440000',R:'#999999'}  // 接近戦: 赤く点滅!
+      :{G:far?'#006600':PAL.G,D:far?'#003300':'#008800',B:'#002200',R:far?'#555555':'#999999'};
+    const sp=drawSprite(SPR_MS,x,y,u,cmap);
+    // バックパック噴射(肩の後方=右上へ吹き流し、突進感)
+    const fl=(tick%6<3)?PAL.Y:PAL.R;
+    px(sp.x0+14*u,sp.y0+3*u,2*u,u,fl);px(sp.x0+15*u,sp.y0+4*u,2*u,u,fl);
+    px(sp.x0+14*u,sp.y0+14*u,2*u,u,fl);                // 流した後ろ脚の噴射
+    if(tick%4<2)px(sp.x0+16*u,sp.y0+3*u,u,u,PAL.W);
+    // 頭部バイザー内をモノアイが走査
+    const ph=(tick/5+e.phase*8|0)%5;
+    px(sp.x0+(5+ph)*u,sp.y0+2*u,u,u,ml?PAL.W:PAL.M);
+    // 発砲マズルフラッシュ(ライフル銃口)
+    if(e.mz>0){e.mz--;px(sp.x0-2*u,sp.y0+6.5*u,2*u,2*u,(tick%2)?PAL.Y:PAL.W);}
+    if(ml){                                            // 右拳のサーベルを手前へ突き出す
+      px(sp.x0+13*u,sp.y0+6*u,u,u,'#880000');
+      px(sp.x0+13*u,sp.y0+7*u,u,9*u,(tick%6<3)?PAL.Y:PAL.M);
+    }
+  }else if(e.type==='ftr'){
+    const u=Math.max(1,Math.round(s*0.95));
+    const sp=drawSprite(SPR_FTR,x,y,u,{C:PAL.C,W:PAL.W,D:'#008888'});
+    if(tick%6<3)px(sp.x0+6*u,sp.y0+7*u,2*u,u,PAL.Y);   // 噴射
+  }else{
+    const u=Math.max(1,Math.round(s*3.6));
+    const lights=(tick/10|0)%2?PAL.Y:PAL.R;            // 舷窓の点滅
+    drawSprite(SPR_SHP,x,y,u,{P:'#880088',M:PAL.M,W:PAL.W,C:PAL.C,Y:lights});
+  }
+}
+function drawHUD(){
+  text(6,4,'SC '+score,PAL.W);
+  text(CX,4,'W'+wave,PAL.C,1,'c');
+  text(W-6,4,'HI '+hi,PAL.W,1,'r');
+  text(6,H-9,'HP',PAL.G);
+  for(let i=0;i<4;i++)px(20+i*10,H-9,8,5,i<hp?(hp<2?PAL.R:PAL.G):'#333');
+  text(68,H-9,shBroken?'SH BREAK':'SH',shBroken?PAL.R:PAL.C);
+  if(!shBroken)for(let i=0;i<6;i++)px(82+i*7,H-9,5,5,i<shHP?PAL.C:'#333');
+  text(W-6,H-9,'X'+Math.max(0,lives-1),PAL.W,1,'r');
+  px(W-26,H-9,8,5,PAL.W);px(W-24,H-8,2,2,PAL.B);
+}
+function bigText(t,y,c){
+  text(CX+1,y+1,t,c,2,'c');text(CX,y,t,PAL.W,2,'c');
+}
+/* タイトル: ORION80オマージュの文字ズーム(整数倍率でカクカク拡大) */
+function drawTitle(){
+  const p=Math.min(1,stTick/90);
+  const sz=Math.max(1,Math.round(p*3));
+  const col=p<1?PAL.C:(tick%30<15?PAL.W:PAL.C);
+  text(CX,52-sz*5,'SPACE MS',col,sz,'c');
+  text(CX,52+sz*2,'BATTLE',col,sz,'c');
+  if(p>=1){
+    if(tick%60<40)text(CX,96,'PRESS X TO START',PAL.W,1,'c');
+    text(CX,114,'←↑↓→:MOVE  X:BEAM RIFLE',PAL.G,1,'c');
+    text(CX,124,'Z/C:SABER L-R  S:SHIELD',PAL.G,1,'c');
+    text(CX,140,'HI-SCORE '+hi,PAL.M,1,'c');
+  }
+}
+function flip(){sc.drawImage(buf,0,0,cv.width,cv.height);}
+
+/* ================= メインループ ================= */
+function loop(){update();draw();requestAnimationFrame(loop);}
+loop();
+</script>
+</body>
+</html>
