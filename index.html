@@ -154,11 +154,28 @@ addEventListener('touchend',tup,{passive:false});
 addEventListener('touchcancel',tup,{passive:false});
 
 /* ================= ゲーム状態 ================= */
-const ST={TITLE:0,PLAY:1,DEAD:2,OVER:3,WAVE:4};
+const ST={TITLE:0,PLAY:1,DEAD:2,OVER:3,WAVE:4,NAME:5,RESET:6};
 let state=ST.TITLE,tick=0,stTick=0;
 let score=0,hi=0,wave=0,lives=3;
+let sHold=0; // タイトルでのSキー長押しカウント(ランキングリセット用)
+/* ---- ハイスコアTop5(ブラウザに保存。保存不可環境ではセッション内のみ) ---- */
+function loadHS(){try{const d=JSON.parse(localStorage.getItem('smb_hs')||'[]');
+  if(Array.isArray(d))return d.slice(0,5);}catch(e){}return[];}
+function saveHS(){try{localStorage.setItem('smb_hs',JSON.stringify(hsList));}catch(e){}}
+let hsList=loadHS();
+hi=hsList[0]?hsList[0].s:0;
+const CHS='ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789.-';
+let nm=Array(7).fill('A'),ni=0,lastName='';
+function regHS(){
+  lastName=nm.join('');
+  hsList.push({n:lastName,s:score});
+  hsList.sort((a,b)=>b.s-a.s);hsList=hsList.slice(0,5);
+  saveHS();hi=hsList[0].s;
+  state=ST.OVER;stTick=0;sfx.wave();
+}
 let cam={x:0,y:0};            // 視点(矢印キーでスクロール) 範囲±60
 const CAMR=60,PARA=2;         // 視差係数: 視点1unit=画面2px
+const SBR_R=60;               // 剣の射程(z)
 let hp=4;                     // 自機HP(換算: 中心被弾=大ダメージ)
 let shHP=6,shOn=false,shBroken=false; // シールド
 let inv=0;                    // 無敵時間
@@ -174,7 +191,7 @@ function addFtext(x,y,str,c){
 /* 自機当たり判定: 中心=縦横1/3の矩形 */
 const CX=W/2,CY=H/2,CRW=W/6,CRH=H/6; // 中心半幅40,半高26
 function zone(sx,sy){
-  if(sx<-10||sx>W+10||sy<-10||sy>H+10)return 0;       // 回避
+  if(sx<4||sx>W-4||sy<4||sy>H-4)return 0;             // 画面端ギリギリ・画面外=回避
   if(Math.abs(sx-CX)<=CRW&&Math.abs(sy-CY)<=CRH)return 2; // 中心
   return 1;                                            // 端
 }
@@ -184,9 +201,10 @@ function zone(sx,sy){
 function spawn(type){
   const e={type,x:cam.x+rnd(-80,80),y:cam.y+rnd(-50,50),z:0,hp:1,t:0,
            fire:rnd(60,160),phase:rnd(0,6.28),melee:0,dead:false};
-  if(type==='ms'){e.z=rnd(420,560);e.hp=2;e.spd=1;}
-  if(type==='ftr'){e.z=rnd(380,520);e.hp=1;e.spd=1.5;}
-  if(type==='shp'){e.z=rnd(460,540);e.hp=5;e.spd=0.25;e.x=cam.x+rnd(-30,30);e.y=cam.y+rnd(-25,5);
+  if(type==='ms'){e.z=rnd(420,560);e.hp=2;e.spd=1;e.dodge=rnd(60,160);}
+  if(type==='ftr'){e.z=rnd(380,520);e.hp=1;e.spd=1.2;}
+  if(type==='shp'){e.z=rnd(460,540);e.hp=10;e.spd=0.25;e.x=cam.x+rnd(-30,30);e.y=cam.y+rnd(-25,5);
+    e.cside=[-1,0,1][Math.floor(Math.random()*3)];   // 弱点コアの位置: 左/中央/右の3種
     snd([[110,150],[0,80],[110,150],[0,80],[110,300]]);}
   enemies.push(e);
 }
@@ -211,8 +229,9 @@ function project(e){ // 敵→画面座標とスケール
    発射時に「狙う視点座標」を記録。着弾時の視点とのズレ→画面位置で判定 */
 function efire(e,kind){ // kind: 'beam'|'big'
   const p=project(e);
-  eshots.push({fx:p.sx,fy:p.sy,t:0,T:kind==='big'?80:55,
-    aimX:cam.x+rnd(-22,22),aimY:cam.y+rnd(-16,16),kind,
+  const ax=kind==='big'?36:22,ay=kind==='big'?26:16; // 戦艦砲は広い角度に散る
+  eshots.push({fx:p.sx,fy:p.sy,t:0,T:kind==='big'?80:55,src:e,
+    aimX:cam.x+rnd(-ax,ax),aimY:cam.y+rnd(-ay,ay),kind,
     dC:kind==='big'?4:2,dE:kind==='big'?2:1});
   snd([[1320,20],[660,30]]);
 }
@@ -239,8 +258,14 @@ function resolveHit(zn,wpn,dC,dE,sx,sy){
 }
 function playerDown(){
   sfx.boom();burst(CX,CY,28,PAL.Y);burst(CX,CY,20,PAL.R);
-  lives--;state=lives>0?ST.DEAD:ST.OVER;stTick=0;
-  if(state===ST.OVER){sfx.over();hi=Math.max(hi,score);}
+  lives--;stTick=0;
+  if(lives>0){state=ST.DEAD;}
+  else{
+    sfx.over();hi=Math.max(hi,score);
+    const qualify=score>0&&(hsList.length<5||score>hsList[hsList.length-1].s);
+    if(qualify){nm=Array(7).fill('A');ni=0;state=ST.NAME;}
+    else state=ST.OVER;
+  }
   eshots=[];
 }
 function respawn(){hp=4;shHP=6;shBroken=false;inv=120;state=ST.PLAY;}
@@ -256,29 +281,69 @@ function fireBeam(){
     const p=project(e),r=hitR(e,p.s);
     if(Math.abs(p.sx-CX)<r&&Math.abs(p.sy-CY)<r&&e.z<bd){bd=e.z;best=e;}
   }
-  if(best)setTimeout(()=>damage(best,1),90);
+  if(best)setTimeout(()=>fireBeamHit(best),90);
 }
 function swing(dir){
   if(saber||shOn)return;   // シールド中は攻撃不可
   saber={dir,t:0};sfx.saber();
-  // 近接のみ: z<90 かつ 振った側〜中央の敵
+  // 敵弾の斬り落とし(接近中の弾を振った側で破壊)
+  for(const s of eshots){
+    if(s.pass)continue;
+    const p=s.t/s.T;if(p<0.45)continue;              // 十分近づいた弾のみ届く
+    const tx=CX+(s.aimX-cam.x)*PARA,ty=CY+(s.aimY-cam.y)*PARA;
+    const bx=s.fx+(tx-s.fx)*p,by=s.fy+(ty-s.fy)*p;
+    if(dir<0?bx<CX+30:bx>CX-30){
+      s.done=true;burst(bx,by,9,PAL.C);burst(bx,by,5,PAL.W);
+      snd([[1568,20],[2093,35]]);score+=10;
+    }
+  }
   for(const e of enemies){
-    if(e.z>=90)continue;
+    if(e.z>=SBR_R)continue;  // 剣の射程内のみ
     const p=project(e);
     const ok=dir<0?p.sx<CX+30:p.sx>CX-30;
-    if(ok&&p.sx>-20&&p.sx<W+20)damage(e,2);
+    if(!ok||p.sx<-20||p.sx>W+20)continue;
+    if(e.type==='ms'&&e.melee>0){
+      // 格闘の読み合い: 相手と同じ側の剣を0.3秒以内に出せば相打ち(ノーダメージ)
+      if(!e.parried&&dir===e.mside&&e.melee>=20&&e.melee<=38){
+        e.parried=true;shake=5;
+        burst(p.sx,p.sy,16,PAL.W);burst(p.sx,p.sy,10,PAL.C);
+        addFtext(p.sx,p.sy-22,'CLASH!',PAL.C);
+        snd([[2093,25],[1568,25],[2093,25],[1046,60]]); // 鍔迫り合いの金属音
+      }else{
+        // 側が違う/タイミング外 → 刃は受け流される
+        burst(p.sx,p.sy,4,PAL.W);snd([[220,40],[165,50]]);
+      }
+    }else if(e.type==='shp'){
+      // 戦艦: コアのある側を斬った時のみ有効(剣ダメージ2=5発で撃沈)
+      const c=corePos(e);
+      const okc=dir<0?c.x<CX+30:c.x>CX-30;
+      if(okc&&c.x>-20&&c.x<W+20)damage(e,2);
+      else{burst(p.sx,p.sy,4,'#888888');snd([[165,50]]);addFtext(p.sx,p.sy-20,'NO DAMAGE',PAL.C);}
+    }else damage(e,2);
   }
 }
-function hitR(e,s){return e.type==='shp'?s*46:e.type==='ms'?s*13:s*11;}
+function hitR(e,s){return e.type==='shp'?s*46:e.type==='ms'?s*13:s*13;}
+function corePos(e){ // 戦艦の弱点コアの画面座標と判定半径
+  const p=project(e),u=Math.max(1,Math.round(p.s*3.6));
+  return{x:p.sx+e.cside*8*u,y:p.sy,r:Math.max(4,3*u)};
+}
+function fireBeamHit(best){
+  if(best.type==='shp'){ // 戦艦はコアのみ有効
+    const c=corePos(best);
+    if(Math.abs(c.x-CX)<c.r&&Math.abs(c.y-CY)<c.r)damage(best,1);
+    else{snd([[110,60]]);burst(CX,CY,4,'#888888');addFtext(CX,CY-16,'NO DAMAGE',PAL.C);}
+  }else damage(best,1);
+}
 function damage(e,d){
   if(e.dead)return;
   e.hp-=(e.type==='ftr'?e.hp:d);  // 戦闘機は何でも1発
-  const p=project(e);
+  const pr=project(e);
+  const p=e.type==='shp'?(c=>({sx:c.x,sy:c.y}))(corePos(e)):pr; // 戦艦はコアで光る
   if(e.hp<=0){
     e.dead=true;sfx.boom();
-    burst(p.sx,p.sy,e.type==='shp'?40:16,PAL.Y);burst(p.sx,p.sy,12,PAL.R);
-    score+=e.type==='shp'?1000:e.type==='ms'?200:100;
-  }else{sfx.hitE();burst(p.sx,p.sy,5,PAL.W);}
+    burst(pr.sx,pr.sy,e.type==='shp'?44:16,PAL.Y);burst(pr.sx,pr.sy,e.type==='shp'?24:12,PAL.R);
+    score+=e.type==='shp'?2000:e.type==='ms'?200:100;
+  }else{sfx.hitE();burst(p.sx,p.sy,e.type==='shp'?8:5,PAL.W);}
 }
 function burst(x,y,n,c){
   for(let i=0;i<n;i++){const a=rnd(0,6.28),v=rnd(.4,2.4);
@@ -287,6 +352,30 @@ function burst(x,y,n,c){
 
 /* ================= キー単発 ================= */
 function edge(k){
+  if(state===ST.RESET){ // RESET RANKING? Y/N
+    if(k==='y'||k==='z'){ // YES: 全消去
+      hsList=[];saveHS();hi=0;lastName='';
+      snd([[880,60],[440,60],[220,160]]);
+      state=ST.TITLE;stTick=0;
+    }else if(k==='n'||k==='c'||k==='x'||k==='Escape'){ // NO: 取り消し
+      snd([[440,40]]);state=ST.TITLE;stTick=0;
+    }
+    return;
+  }
+  if(state===ST.NAME){ // 名前入力: ↑↓文字 ←→桁 直接タイプ可 X/Enterで確定
+    if(stTick<45)return;                              // 戦闘の連打が流れ込まないよう入力ロック
+    if(k==='ArrowUp'||k==='ArrowDown'){
+      const d=k==='ArrowUp'?1:-1;
+      nm[ni]=CHS[(CHS.indexOf(nm[ni])+d+CHS.length)%CHS.length];snd([[880,20]]);
+    }else if(k==='ArrowLeft'){ni=Math.max(0,ni-1);snd([[660,20]]);}
+    else if(k==='ArrowRight'){ni=Math.min(6,ni+1);snd([[660,20]]);}
+    else if(/^[a-wyz0-9]$/.test(k)){                  // 直接タイプ(xは確定キーのため除外)
+      nm[ni]=k.toUpperCase();ni=Math.min(6,ni+1);snd([[1046,20]]);
+    }else if(k==='x'||k==='Enter'){
+      if(ni<6){ni++;snd([[660,20]]);}else regHS();
+    }else if(k==='Backspace'){ni=Math.max(0,ni-1);snd([[440,20]]);}
+    return;
+  }
   if(state===ST.TITLE&&k==='x'){score=0;wave=0;lives=3;hp=4;shHP=6;shBroken=false;
     enemies=[];eshots=[];parts=[];cam={x:0,y:0};startWave();return;}
   if(state===ST.OVER&&k==='x'&&stTick>60){state=ST.TITLE;stTick=0;return;}
@@ -299,6 +388,12 @@ function edge(k){
 /* ================= 更新 ================= */
 function update(){
   tick++;stTick++;if(inv>0)inv--;if(shake>0)shake--;
+  if(state===ST.TITLE){ // S/SHLD長押し3秒でランキングリセット確認へ
+    if(key['s']){
+      sHold++;
+      if(sHold>=180){sHold=0;state=ST.RESET;stTick=0;snd([[660,60],[880,140]]);}
+    }else sHold=0;
+  }else sHold=0;
   if(state===ST.WAVE&&stTick>90)state=ST.PLAY;
   if(state===ST.DEAD&&stTick>100)respawn();
   if(state!==ST.PLAY&&state!==ST.WAVE&&state!==ST.DEAD)return;
@@ -315,17 +410,34 @@ function update(){
   for(const e of enemies){
     e.t++;
     if(e.type==='ms'){
-      if(e.melee>0){ // 格闘シーケンス: 急接近して画面いっぱいに迫る
+      if(e.melee>0){ // 格闘シーケンス: 正面へ回り込み、左右どちらかの剣で斬りかかる
         e.melee--;
-        if(e.melee>30)e.z=Math.max(32,e.z-2.4);      // 突進(ぐっと大きくなる)
-        if(e.melee===20&&state===ST.PLAY)meleeHit();
-        if(e.melee===0)e.z=rnd(280,380);             // 斬り抜けて離脱
+        if(e.melee>30){
+          e.z=Math.max(32,e.z-2.4);                  // 突進(ぐっと大きくなる)
+          e.x+=(cam.x-e.x)*0.2;e.y+=(cam.y-e.y)*0.2; // 自機の正面へ回り込む
+        }
+        if(e.melee===38)snd([[e.mside<0?440:880,50],[e.mside<0?330:1320,50]]); // 振りかぶり(左右で音が違う)
+        if(e.melee===20&&state===ST.PLAY&&!e.parried)meleeHit();
+        if(e.melee===0){e.z=rnd(280,380);e.parried=false;} // 斬り抜けて離脱
       }else{
         e.z-=0.55*e.spd;
         e.x+=Math.sin(e.t/40+e.phase)*0.5;e.y+=Math.cos(e.t/55+e.phase)*0.3;
         // 視点中央へ寄りながら接近(格闘の説得力)
         e.x+=(cam.x-e.x)*0.012;e.y+=(cam.y-e.y)*0.012;
-        if(e.z<110){e.melee=78;snd([[880,40],[440,40],[880,40]]);} // 接近戦突入!
+        // 瞬間回避: ランダムなタイミングで上下左右いずれかへ1機分ステップ
+        if(--e.dodge<=0){
+          const d=[[12,0],[-12,0],[0,10],[0,-10]][Math.floor(Math.random()*4)];
+          const pp=project(e);
+          burst(pp.sx,pp.sy,7,PAL.C);                // 残像バースト(噴射の名残)
+          e.x+=d[0];e.y+=d[1];
+          e.dodge=rnd(45,150);
+          if(state===ST.PLAY&&e.z<320)snd([[1760,15]]);
+        }
+        if(e.z<110){
+          e.melee=78;e.parried=false;
+          e.mside=Math.random()<0.5?-1:1;            // -1:自機から見て左の剣 / 1:右の剣
+          snd([[880,40],[440,40],[880,40]]);         // 接近戦突入!
+        }
         else if(e.z<420&&--e.fire<=0){efire(e,'beam');e.fire=rnd(110,190);e.mz=8;}
       }
     }else if(e.type==='ftr'){
@@ -333,9 +445,12 @@ function update(){
       e.x+=Math.sin(e.t/16+e.phase)*1.6;e.y+=Math.cos(e.t/22+e.phase)*0.8;
       if(e.z<40){e.z=rnd(420,520);e.x=cam.x+rnd(-80,80);e.y=cam.y+rnd(-50,50);}
       if(e.z<400&&--e.fire<=0){efire(e,'beam');e.fire=rnd(90,150);}
-    }else{ // 戦艦: ゆっくり迫る(z=260で停止)
-      e.z=Math.max(260,e.z-0.18);e.x+=Math.sin(e.t/120+e.phase)*0.2;
-      if(--e.fire<=0){efire(e,'big');e.fire=rnd(150,220);}
+    }else{ // 戦艦: 剣の届く距離(z=55)までじわじわ迫る
+      e.z=Math.max(55,e.z-0.3);e.x+=Math.sin(e.t/120+e.phase)*0.2;
+      if(--e.fire<=0){ // 主砲は常に3発同時、3方向ランダム
+        for(let i=0;i<3;i++)efire(e,'big');
+        e.fire=rnd(170,240);
+      }
     }
   }
   enemies=enemies.filter(e=>!e.dead);
@@ -353,10 +468,15 @@ function update(){
     if(s.t>=s.T){
       const sx=CX+(s.aimX-cam.x)*PARA,sy=CY+(s.aimY-cam.y)*PARA;
       if(state===ST.PLAY){
-        const res=resolveHit(zone(sx,sy),'beam',s.dC,s.dE,sx,sy);
+        // 発射元の敵を画面外に逃していればエスケープ成功(ノーダメージ)
+        const ep=project(s.src);
+        const esc=s.src.dead||ep.sx<0||ep.sx>W||ep.sy<0||ep.sy>H;
+        const res=esc?'miss':resolveHit(zone(sx,sy),'beam',s.dC,s.dE,sx,sy);
         if(res==='miss'){ // 回避成功→すれ違いへ
           s.pass=1;s.mx=sx;s.my=sy;
-          let dx=sx-CX,dy=sy-CY;const L=Math.hypot(dx,dy)||1;
+          let dx=sx-CX,dy=sy-CY;
+          if(Math.hypot(dx,dy)<2){dx=rnd(-1,1)||0.7;dy=rnd(-1,1)||-0.7;}
+          const L=Math.hypot(dx,dy)||1;
           s.dx=dx/L;s.dy=dy/L;snd([[330,30],[165,40]]);
         }else s.done=true;
       }else s.done=true;
@@ -401,6 +521,12 @@ function draw(){
   const ox=shake?rnd(-2,2):0,oy=shake?rnd(-2,2):0;
   drawStars(ox,oy);
   if(state===ST.TITLE){drawTitle();flip();return;}
+  if(state===ST.RESET){
+    bigText('RESET RANKING?',46,PAL.R);
+    text(CX,74,isTouch?'SBR L:YES   SBR R:NO':'Y:YES   N:NO',PAL.W,1,'c');
+    text(CX,92,'TOP: '+(hsList[0]?hsList[0].n+'  '+hsList[0].s:'---'),PAL.C,1,'c');
+    flip();return;
+  }
 
   // 敵(奥から)
   const es=[...enemies].sort((a,b)=>b.z-a.z);
@@ -433,11 +559,14 @@ function draw(){
 
   /* --- コックピット --- */
   if(state===ST.PLAY||state===ST.WAVE){
-    // 自ビーム
+    // 自ビーム: 右側から黄色の一閃(ビームライフル)
     for(const b of beams){
-      g.strokeStyle=PAL.Y;g.lineWidth=2;
-      g.beginPath();g.moveTo(18,H);g.lineTo(CX,CY);g.moveTo(W-18,H);g.lineTo(CX,CY);g.stroke();
-      px(CX-3,CY-3,6,6,PAL.W);
+      g.strokeStyle=PAL.Y;g.lineWidth=4;
+      g.beginPath();g.moveTo(W-24,H+6);g.lineTo(CX,CY);g.stroke();
+      g.strokeStyle=PAL.W;g.lineWidth=1;
+      g.beginPath();g.moveTo(W-24,H+6);g.lineTo(CX,CY);g.stroke();
+      px(W-30,H-14,12,6,b.t<3?PAL.W:PAL.Y);            // 銃口の発光
+      px(CX-3,CY-3,6,6,b.t<4?PAL.W:PAL.Y);             // 着弾点の閃光
     }
     // サーベル
     if(saber){
@@ -468,13 +597,40 @@ function draw(){
   for(const f of ftexts)text(f.x,f.y,f.str,(f.t%6<3)?f.c:PAL.W,1,'c');
   drawHUD();
   const shp=enemies.find(e=>e.type==='shp');
-  if(shp&&shp.t<160&&tick%20<12)bigText('WARNING',28,PAL.R);
+  if(shp){
+    if(shp.t<160&&tick%20<12)bigText('WARNING',28,PAL.R);
+    text(CX-46,14,'CORE',PAL.M);                       // 戦艦コアHPゲージ
+    for(let i=0;i<10;i++)px(CX-22+i*5,14,4,5,i<shp.hp?PAL.M:'#333');
+  }
   if(state===ST.WAVE){bigText('WAVE '+wave,CY-8,PAL.C);}
   if(state===ST.DEAD){bigText('DOWN...',CY-8,PAL.R);}
+  if(state===ST.NAME){
+    bigText('NEW RECORD!',24,PAL.Y);
+    text(CX,46,'SCORE '+score,PAL.W,1,'c');
+    text(CX,60,'ENTER YOUR NAME',PAL.C,1,'c');
+    for(let i=0;i<7;i++){ // 7文字、カーソル位置は点滅+下線
+      const x=CX-40+i*12;
+      text(x,76,nm[i],(i===ni&&tick%14<7)?PAL.Y:PAL.W,3,'l');
+      if(i===ni)px(x,94,9,2,(tick%14<7)?PAL.Y:PAL.C);
+    }
+    if(stTick<45){ // 入力ロック中
+      if(tick%10<6)text(CX,108,'- WAIT -',PAL.R,1,'c');
+    }else{
+      text(CX,108,'↑↓:CHAR  ←→:MOVE',PAL.G,1,'c');
+      text(CX,118,(isTouch?'BEAM':'X')+':NEXT/OK  BS:BACK',PAL.G,1,'c');
+    }
+  }
   if(state===ST.OVER){
-    bigText('GAME OVER',CY-16,PAL.R);
-    text(CX,CY+4,'SCORE '+score+'  HI '+hi,PAL.W,1,'c');
-    if(stTick>60&&tick%60<40)text(CX,CY+18,isTouch?'TAP TO RETRY':'PRESS X',PAL.W,1,'c');
+    bigText('GAME OVER',20,PAL.R);
+    text(CX,40,'SCORE '+score,PAL.W,1,'c');
+    text(CX,54,'- BEST 5 -',PAL.C,1,'c');
+    for(let i=0;i<5;i++){ // ランキング(今回の記録は点滅)
+      const h=hsList[i];
+      const row=(i+1)+'. '+(h?h.n+'  '+h.s:'---');
+      const hot=h&&h.n===lastName&&h.s===score;
+      text(CX,64+i*10,row,(hot&&tick%20<12)?PAL.Y:PAL.W,1,'c');
+    }
+    if(stTick>60&&tick%60<40)text(CX,122,isTouch?'TAP TO RETRY':'PRESS X',PAL.W,1,'c');
   }
   flip();
 }
@@ -521,6 +677,9 @@ function drawSprite(map,cx0,cy0,u,cmap){ // 整数グリッドに揃えてくっ
   }
   return{x0,y0};
 }
+function crn(x,y,dx,dy,c){ // ロックオンの四隅カギ括弧
+  px(dx>0?x:x-4,y,5,1,c);px(x,dy>0?y:y-4,1,5,c);
+}
 function drawEnemy(e,ox,oy){
   const{sx,sy,s}=project(e);if(sx<-80||sx>W+80||sy<-80||sy>H+80)return;
   const x=sx+ox,y=sy+oy;
@@ -541,19 +700,40 @@ function drawEnemy(e,ox,oy){
     px(sp.x0+(5+ph)*u,sp.y0+2*u,u,u,ml?PAL.W:PAL.M);
     // 発砲マズルフラッシュ(ライフル銃口)
     if(e.mz>0){e.mz--;px(sp.x0-2*u,sp.y0+6.5*u,2*u,2*u,(tick%2)?PAL.Y:PAL.W);}
-    if(ml){                                            // 右拳のサーベルを手前へ突き出す
-      px(sp.x0+13*u,sp.y0+6*u,u,u,'#880000');
-      px(sp.x0+13*u,sp.y0+7*u,u,9*u,(tick%6<3)?PAL.Y:PAL.M);
+    if(ml&&!e.parried){            // 構えた側の剣を振りかぶり→中央へ斬り込む
+      const side=e.mside||1;
+      const prog=e.melee<=20?Math.min(1,(20-e.melee)/10):0; // 斬り込みアニメ
+      const bx=side<0?sp.x0+(1+prog*5)*u:sp.x0+(14-prog*5)*u;
+      px(bx,sp.y0+5*u,u,u,'#880000');
+      px(bx,sp.y0+6*u,u,10*u,(tick%6<3)?PAL.Y:PAL.M);
+    }else if(ml&&e.parried&&tick%4<2){ // 相打ち: 鍔迫り合いの火花
+      px(sp.x0+7*u,sp.y0+7*u,2*u,2*u,PAL.W);
     }
   }else if(e.type==='ftr'){
-    const u=Math.max(1,Math.round(s*0.95));
+    const u=Math.max(1,Math.round(s*1.4));             // さらに1.2倍サイズ
     const sp=drawSprite(SPR_FTR,x,y,u,{C:PAL.C,W:PAL.W,D:'#008888'});
     if(tick%6<3)px(sp.x0+6*u,sp.y0+7*u,2*u,u,PAL.Y);   // 噴射
   }else{
     const u=Math.max(1,Math.round(s*3.6));
     const lights=(tick/10|0)%2?PAL.Y:PAL.R;            // 舷窓の点滅
     drawSprite(SPR_SHP,x,y,u,{P:'#880088',M:PAL.M,W:PAL.W,C:PAL.C,Y:lights});
+    // 弱点コア(左/中央/右のいずれか、脈動して光る)
+    const ccx=x+e.cside*8*u,pu=(tick%16<8)?PAL.Y:PAL.R;
+    px(ccx-2*u,y-2*u,4*u,4*u,'#440044');
+    px(ccx-1.5*u,y-1.5*u,3*u,3*u,pu);
+    px(ccx-u/2,y-u/2,u,u,PAL.W);
   }
+  // 剣の射程内: ロックオンマーク(点滅ブラケット+ロック音、戦艦はコアに表示)
+  if(e.z<SBR_R){
+    if(!e.lk){e.lk=1;if(state===ST.PLAY)snd([[1318,25],[1760,35]]);}
+    let mx=x,my=y,r=Math.max(11,Math.round(hitR(e,s)*0.8));
+    if(e.type==='shp'){
+      const u2=Math.max(1,Math.round(s*3.6));
+      mx=x+e.cside*8*u2;r=Math.max(12,Math.round(3.5*u2));
+    }
+    const c=(tick%10<5)?PAL.Y:PAL.C;
+    crn(mx-r,my-r,1,1,c);crn(mx+r,my-r,-1,1,c);crn(mx-r,my+r,1,-1,c);crn(mx+r,my+r,-1,-1,c);
+  }else e.lk=0;
 }
 function drawHUD(){
   text(6,4,'SC '+score,PAL.W);
@@ -581,6 +761,12 @@ function drawTitle(){
     text(CX,114,'←↑↓→:MOVE  X:BEAM RIFLE',PAL.G,1,'c');
     text(CX,124,'Z/C:SABER L-R  S:SHIELD',PAL.G,1,'c');
     text(CX,140,'HI-SCORE '+hi,PAL.M,1,'c');
+    if(sHold>20){ // 長押し進行ゲージ
+      text(CX,150,'RESET RANKING...',PAL.R,1,'c');
+      px(CX-40,157,Math.min(80,80*sHold/180),2,PAL.R);
+    }else{
+      text(CX,150,'HOLD '+(isTouch?'SHLD':'S')+' 3S:RESET RANK','#555555',1,'c');
+    }
   }
 }
 function flip(){sc.drawImage(buf,0,0,cv.width,cv.height);}
